@@ -1,0 +1,40 @@
+# Copie ce fichier en `config.toml` et adapte les valeurs.
+# Ne commite JAMAIS config.toml (voir .gitignore) : il contient le token.
+
+[server]
+# "stdio"  -> mode local, lancé par le client MCP (Termux, tests rapides)
+# "http"   -> mode distant, écoute HTTP/SSE (VPS)
+transport = "http"
+bind_addr = "0.0.0.0:8787"
+
+[auth]
+# Token Bearer attendu dans l'en-tête: Authorization: Bearer <TOKEN>
+# Peut aussi être fourni via la variable d'env MCP_VPS_TOKEN (prioritaire).
+bearer_token = "change-me-before-deploy"
+
+[filesystem]
+# Racine à laquelle read_file / write_file / list_dir sont confinés.
+# Toute tentative de sortie (via ../, liens symboliques, etc.) est rejetée.
+workspace_root = "/home/mcp-runner/workspace"
+
+[audit]
+log_path = "/var/log/mcp-vps-server/audit.jsonl"
+
+[commands]
+# Phase 2 : whitelist initiale des commandes exécutables sans confirmation.
+# Toute commande absente de cette liste déclenchera une demande d'approbation
+# (via prompt MCP natif et/ou canal Telegram, selon telegram.enabled).
+whitelist = ["ls", "git status", "cargo build", "cargo test", "cargo clippy"]
+
+[telegram]
+enabled = false
+bot_token = ""
+chat_id = ""
+
+[logs]
+# Chemins autorisés pour tail_file (lecture seule). journalctl (service_logs)
+# n'a pas besoin d'être listé ici.
+allowed_paths = ["/var/log/nginx/error.log"]
+
+[snapshots]
+dir = "/var/lib/mcp-vps-server/snapshots"

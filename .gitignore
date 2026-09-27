@@ -1,0 +1,5 @@
+/target
+config.toml
+*.bak.*
+audit.jsonl
+.env
