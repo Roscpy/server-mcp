@@ -6,6 +6,8 @@
 use crate::exec::{ExecCommandParams, ExecTools};
 use crate::logs::{LogTools, ServiceLogsParams, TailFileParams};
 use crate::monitor::ResourceMonitor;
+use crate::native_confirm;
+use rmcp::service::{Peer, RoleServer};
 use crate::snapshot::SnapshotManager;
 use crate::tools::fs_tools::{FsTools, ListDirParams, ReadFileParams, WriteFileParams};
 
@@ -87,20 +89,34 @@ impl McpVpsHandler {
     // ---------- Phase 2 : exécution de commandes ----------
 
     #[tool(description = "Exécute une commande shell. Si elle n'est pas dans la whitelist, met l'action en pause et demande une confirmation humaine (prompt MCP natif si le client le supporte, sinon Telegram).")]
-    async fn exec_command(&self, Parameters(params): Parameters<ExecCommandParams>) -> Result<CallToolResult, ErrorData> {
-        // TODO(élicitation native): si le client MCP annonce la capability
-        // "elicitation", on peut ici appeler context.elicit(...) avant de
-        // tomber sur le fallback Telegram, pour éviter la latence du
-        // aller-retour Telegram quand ce n'est pas nécessaire. Nécessite
-        // d'exposer `RequestContext<RoleServer>` jusqu'à ExecTools ou de
-        // dupliquer ce chemin ici — pas fait dans ce squelette pour rester
-        // lisible, mais c'est l'endroit exact où le brancher.
-        match self.exec_tools.exec_command(params).await {
-            Ok(result) => ok_json(result),
-            Err(e) => err_text(e),
+    async fn exec_command(
+        &self,
+        Parameters(params): Parameters<ExecCommandParams>,
+        peer: Peer<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        if self.exec_tools.is_whitelisted(&params.command).await {
+            return match self.exec_tools.exec_command(params).await {
+                Ok(result) => ok_json(result),
+                Err(e) => err_text(e),
+            };
+        }
+        match native_confirm::ask(&peer, &params.command, params.remember_if_approved).await {
+            native_confirm::Native::Approved => match self.exec_tools.run_approved(params).await {
+                Ok(result) => ok_json(result),
+                Err(e) => err_text(e),
+            },
+            native_confirm::Native::Denied(reason) => {
+                self.exec_tools.record_denied(&params.command, &reason).await;
+                err_text(format!("commande refusée: {reason}"))
+            }
+            // Client sans élicitation : repli sur le canal externe (Telegram).
+            native_confirm::Native::Unsupported => match self.exec_tools.exec_command(params).await {
+                Ok(result) => ok_json(result),
+                Err(e) => err_text(e),
+            },
         }
     }
-
+    
     // ---------- Phase 3 : logs & snapshots ----------
 
     #[tool(description = "Lit les dernières lignes d'un fichier de log explicitement autorisé (voir [logs] allowed_paths dans config.toml).")]

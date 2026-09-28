@@ -1,56 +1,65 @@
 pub mod fs_tools;
 
 use anyhow::{bail, Result};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
-/// Résout `requested` relativement à `root` et vérifie que le résultat
-/// reste bien à l'intérieur de `root`, même via `..`, liens symboliques
-/// ou chemins absolus fournis par erreur/malice.
-///
-/// C'est la seule porte d'entrée que les tools filesystem doivent utiliser
-/// pour toucher au disque — ne jamais joindre un chemin utilisateur
-/// directement avec `root`.
+/// Résout `requested` sous `root` et garantit que le résultat reste dans `root`
+/// (refuse `..`, suit les liens symboliques via le plus proche ancêtre existant).
 pub fn confine_path(root: &Path, requested: &str) -> Result<PathBuf> {
-    let candidate = root.join(requested.trim_start_matches('/'));
-
-    // canonicalize exige que le chemin existe déjà pour les lectures ;
-    // pour les écritures (fichier pas encore créé), on canonicalise le
-    // dossier parent puis on rajoute le nom de fichier.
-    let (parent_to_check, file_name) = if candidate.exists() {
-        (candidate.clone(), None)
-    } else {
-        let parent = candidate.parent().unwrap_or(root).to_path_buf();
-        let name = candidate.file_name().map(|f| f.to_owned());
-        (parent, name)
-    };
-
-    let canon_root = root.canonicalize()?;
-    let canon_parent = parent_to_check
-        .canonicalize()
-        .unwrap_or_else(|_| parent_to_check.clone());
-
-    if !canon_parent.starts_with(&canon_root) {
-        bail!(
-            "chemin refusé: '{}' sort de la racine autorisée",
-            requested
-        );
+    let rel = Path::new(requested.trim_start_matches('/'));
+    if rel
+        .components()
+        .any(|c| matches!(c, Component::ParentDir | Component::Prefix(_)))
+    {
+        bail!("chemin refusé: '{}' contient '..'", requested);
     }
 
-    Ok(match file_name {
-        Some(name) => canon_parent.join(name),
-        None => canon_parent,
-    })
+    let canon_root = root.canonicalize()?;
+    let candidate = canon_root.join(rel);
+
+    let mut existing = candidate.as_path();
+    let mut tail = Vec::new();
+    while existing.symlink_metadata().is_err() {
+        match (existing.file_name(), existing.parent()) {
+            (Some(name), Some(parent)) => {
+                tail.push(name.to_owned());
+                existing = parent;
+            }
+            _ => bail!("chemin invalide: '{}'", requested),
+        }
+    }
+
+    let mut resolved = existing.canonicalize()?;
+    if !resolved.starts_with(&canon_root) {
+        bail!("chemin refusé: '{}' sort de la racine autorisée", requested);
+    }
+    for name in tail.into_iter().rev() {
+        resolved.push(name);
+    }
+    Ok(resolved)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn tmp_root(name: &str) -> PathBuf {
+        let p = std::env::temp_dir().join(format!("mcp-vps-{name}-{}", std::process::id()));
+        std::fs::create_dir_all(&p).unwrap();
+        p
+    }
+
     #[test]
-    fn rejects_path_traversal() {
-        let tmp = std::env::temp_dir().join("mcp-vps-test-root");
-        std::fs::create_dir_all(&tmp).unwrap();
-        let res = confine_path(&tmp, "../../etc/passwd");
-        assert!(res.is_err());
+    fn rejects_parent_dir() {
+        let root = tmp_root("a");
+        assert!(confine_path(&root, "../../etc/passwd").is_err());
+        assert!(confine_path(&root, "a/../../x/new.txt").is_err());
+    }
+
+    #[test]
+    fn accepts_new_nested_path() {
+        let root = tmp_root("b");
+        let p = confine_path(&root, "new/dir/file.txt").unwrap();
+        assert!(p.starts_with(root.canonicalize().unwrap()));
     }
 }

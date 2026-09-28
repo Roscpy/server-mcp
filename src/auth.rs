@@ -1,9 +1,3 @@
-//! Vérification du header `Authorization: Bearer <token>` pour le
-//! transport HTTP/SSE distant. En mode stdio (local), l'auth est implicite
-//! (le processus est lancé directement par le client MCP), donc ce module
-//! n'est utilisé que par la branche http de main.rs.
-
-/// Comparaison en temps constant pour éviter le timing attack sur le token.
 pub fn tokens_match(provided: &str, expected: &str) -> bool {
     let a = provided.as_bytes();
     let b = expected.as_bytes();
@@ -17,8 +11,8 @@ pub fn tokens_match(provided: &str, expected: &str) -> bool {
     diff == 0
 }
 
-pub fn extract_bearer(header_value: Option<&str>) -> Option<&str> {
-    header_value?.strip_prefix("Bearer ")
+pub fn extract_bearer(header_value: &str) -> Option<&str> {
+    header_value.strip_prefix("Bearer ")
 }
 
 #[cfg(test)]
@@ -27,9 +21,8 @@ mod tests {
 
     #[test]
     fn extracts_token() {
-        assert_eq!(extract_bearer(Some("Bearer abc123")), Some("abc123"));
-        assert_eq!(extract_bearer(Some("Basic xyz")), None);
-        assert_eq!(extract_bearer(None), None);
+        assert_eq!(extract_bearer("Bearer abc123"), Some("abc123"));
+        assert_eq!(extract_bearer("Basic xyz"), None);
     }
 
     #[test]

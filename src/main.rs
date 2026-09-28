@@ -1,15 +1,3 @@
-//! mcp-vps-server — Phases 1 à 4 (squelette câblé)
-//!
-//! ⚠️ Le SDK `rmcp` est encore < 1.0. Le câblage ci-dessous suit les
-//! patterns confirmés dans plusieurs serveurs publiés sur crates.io
-//! (macros #[tool_router]/#[tool_handler], StreamableHttpService + axum),
-//! mais n'a pas pu être compilé dans cet environnement (pas d'accès
-//! réseau pour télécharger les crates). Au premier `cargo build`, les
-//! erreurs restantes seront très probablement des détails de signature
-//! (nom exact d'un champ, d'une méthode de builder) et pas des erreurs
-//! d'architecture — corrige-les contre https://docs.rs/rmcp au fil de
-//! l'eau.
-
 mod audit;
 mod auth;
 mod config;
@@ -18,12 +6,15 @@ mod exec;
 mod handler;
 mod logs;
 mod monitor;
+mod native_confirm;
+mod oauth;
 mod snapshot;
 mod telegram;
 mod tools;
 
 use anyhow::{Context, Result};
 use axum::extract::State;
+use axum::http::header::{AUTHORIZATION, WWW_AUTHENTICATE};
 use axum::http::{HeaderMap, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
@@ -103,7 +94,17 @@ async fn run_stdio(handler: McpVpsHandler) -> Result<()> {
 }
 
 async fn run_http(handler: McpVpsHandler, exec_tools: Arc<ExecTools>, cfg: &config::Config) -> Result<()> {
-    tracing::info!(addr = %cfg.server.bind_addr, "démarrage en mode http");
+    // URL publique (tunnel ou domaine), utilisée par OAuth. Ex: MCP_PUBLIC_URL=https://xxx.trycloudflare.com
+    let base_url = std::env::var("MCP_PUBLIC_URL")
+        .unwrap_or_else(|_| format!("http://{}", cfg.server.bind_addr))
+        .trim_end_matches('/')
+        .to_string();
+    tracing::info!(addr = %cfg.server.bind_addr, public_url = %base_url, "démarrage en mode http");
+
+    let oauth_state = oauth::OAuthState {
+        secret: Arc::new(cfg.auth.bearer_token.clone()),
+        base_url: Arc::new(base_url),
+    };
 
     let session_manager = Arc::new(LocalSessionManager::default());
     let mcp_service = StreamableHttpService::new(move || Ok(handler.clone()), session_manager, Default::default());
@@ -114,17 +115,11 @@ async fn run_http(handler: McpVpsHandler, exec_tools: Arc<ExecTools>, cfg: &conf
 
     let app = Router::new()
         .nest_service("/mcp", mcp_service)
-        .layer(middleware::from_fn_with_state(
-            Arc::new(cfg.auth.bearer_token.clone()),
-            bearer_auth_middleware,
-        ))
-        // Le webhook Telegram est délibérément hors du middleware d'auth
-        // Bearer ci-dessus (Telegram n'enverra jamais ce header) — sa
-        // sécurité repose sur le secret d'URL que tu choisis en
-        // enregistrant le webhook (ex: /telegram/webhook/<secret-random>),
-        // à adapter selon la config de ton bot.
+        .layer(middleware::from_fn_with_state(oauth_state.clone(), bearer_auth_middleware))
+        // Hors du middleware d'auth : webhook Telegram et routes OAuth.
         .route("/telegram/webhook", post(telegram_webhook_handler))
-        .with_state(telegram_state);
+        .with_state(telegram_state)
+        .merge(oauth::router(oauth_state));
 
     let listener = tokio::net::TcpListener::bind(&cfg.server.bind_addr)
         .await
@@ -133,21 +128,36 @@ async fn run_http(handler: McpVpsHandler, exec_tools: Arc<ExecTools>, cfg: &conf
     Ok(())
 }
 
+/// Accepte soit le token statique (Inspector, Claude Code), soit un token OAuth signé (claude.ai).
 async fn bearer_auth_middleware(
-    State(expected_token): State<Arc<String>>,
+    State(oauth): State<oauth::OAuthState>,
     headers: HeaderMap,
     request: axum::extract::Request,
     next: Next,
 ) -> Response {
     let provided = headers
-        .get(axum::http::header::AUTHORIZATION)
+        .get(AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
-        .and_then(|value| auth::extract_bearer(Some(value)));
+        .and_then(auth::extract_bearer);
 
-    match provided {
-        Some(token) if auth::tokens_match(token, &expected_token) => next.run(request).await,
-        _ => (StatusCode::UNAUTHORIZED, "invalid or missing bearer token").into_response(),
+    let ok = match provided {
+        Some(token) => auth::tokens_match(token, &oauth.secret) || oauth::is_valid_access_token(&oauth, token),
+        None => false,
+    };
+    if ok {
+        return next.run(request).await;
     }
+
+    let challenge = format!(
+        "Bearer resource_metadata=\"{}/.well-known/oauth-protected-resource\"",
+        oauth.base_url
+    );
+    (
+        StatusCode::UNAUTHORIZED,
+        [(WWW_AUTHENTICATE, challenge)],
+        "invalid or missing bearer token",
+    )
+        .into_response()
 }
 
 #[derive(Clone)]

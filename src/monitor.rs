@@ -56,7 +56,7 @@ impl ResourceMonitor {
 
         let disks_list = Disks::new_with_refreshed_list();
         let disks = disks_list
-            .iter()
+            .iter().filter(|d| !d.is_read_only() && !d.mount_point().starts_with("/apex") && !d.mount_point().starts_with("/bootstrap-apex"))
             .map(|d| {
                 let total = d.total_space();
                 let available = d.available_space();

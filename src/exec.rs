@@ -102,6 +102,9 @@ impl ExecTools {
     }
 
     async fn request_confirmation(&self, command: &str) -> Result<bool> {
+        if !self.telegram_cfg.enabled {
+            return Ok(false);
+        }
         let (id, rx) = self.confirmations.create(format!("exec_command: {command}")).await;
 
         // Canal 1: notification Telegram si activé.
@@ -146,5 +149,31 @@ impl ExecTools {
             .ok();
 
         Ok(result)
+    }
+}
+
+impl ExecTools {
+    pub async fn is_whitelisted(&self, command: &str) -> bool {
+        self.whitelist.lock().await.iter().any(|c| c == command)
+    }
+
+    /// Exécute une commande déjà approuvée par un humain via le canal natif.
+    pub async fn run_approved(&self, params: ExecCommandParams) -> Result<ExecCommandResult> {
+        if params.remember_if_approved {
+            self.whitelist.lock().await.push(params.command.clone());
+        }
+        self.run(&params.command, true).await
+    }
+
+    pub async fn record_denied(&self, command: &str, reason: &str) {
+        self.audit
+            .record(
+                "exec_command",
+                serde_json::json!({ "command": command }),
+                AuditOutcome::Denied { reason: reason.to_string() },
+                true,
+            )
+            .await
+            .ok();
     }
 }
