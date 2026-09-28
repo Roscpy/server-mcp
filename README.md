@@ -31,7 +31,7 @@ Compatible avec tout client MCP supportant le transport HTTP (Claude Code, Claud
 Prérequis : Rust stable. Sur Termux : `pkg install rust clang make pkg-config binutils`.
 
 ```bash
-git clone https://github.com/\<ton-user\>/mcp-vps-server.git
+git clone https://github.com/Roscpy/mcp-vps-server.git
 cd mcp-vps-server
 cargo build --release
 ```
