@@ -69,6 +69,7 @@ async fn main() -> Result<()> {
     let exec_tools = Arc::new(ExecTools::new(
         cfg.filesystem.workspace_root.clone(),
         cfg.commands.whitelist.clone(),
+        cfg.security.blocked_paths.clone(),
         audit_log.clone(),
         confirmations.clone(),
         cfg.telegram.clone(),
@@ -111,6 +112,7 @@ async fn run_http(handler: McpVpsHandler, exec_tools: Arc<ExecTools>, cfg: &conf
 
     let telegram_state = Arc::new(TelegramWebhookState {
         confirmations: exec_tools.confirmation_store(),
+        secret: Arc::new(cfg.telegram.webhook_secret.clone()),
     });
 
     let app = Router::new()
@@ -162,13 +164,22 @@ async fn bearer_auth_middleware(
 
 #[derive(Clone)]
 struct TelegramWebhookState {
+    secret: Arc<String>,
     confirmations: ConfirmationStore,
 }
 
 async fn telegram_webhook_handler(
     State(state): State<Arc<TelegramWebhookState>>,
+    headers: HeaderMap,
     Json(payload): Json<telegram::TelegramWebhookPayload>,
 ) -> impl IntoResponse {
+    let ok = headers
+        .get("X-Telegram-Bot-Api-Secret-Token")
+        .and_then(|v| v.to_str().ok())
+        .map_or(false, |v| auth::tokens_match(v, &state.secret));
+    if !ok {
+        return StatusCode::UNAUTHORIZED;
+    }
     if let Some(cb) = payload.callback_query {
         if let Some((id, approved)) = telegram::parse_callback_data(&cb.data) {
             let decision = if approved { Decision::Approved } else { Decision::Denied };

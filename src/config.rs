@@ -15,13 +15,21 @@ pub struct Config {
     pub logs: LogsConfig,
     #[serde(default)]
     pub snapshots: SnapshotsConfig,
+    #[serde(default)]
+    pub security: SecurityConfig,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct SecurityConfig {
+    /// Sous-chaînes interdites dans une commande exec_command, quelle que
+    /// soit la whitelist ou une confirmation humaine. Vérifié en premier,
+    /// avant toute autre logique — dernier filet de sécurité.
+    #[serde(default)]
+    pub blocked_paths: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct LogsConfig {
-    /// Chemins de fichiers de log explicitement autorisés pour tail_file.
-    /// Vide par défaut — journalctl (service_logs) n'a pas besoin de cette
-    /// liste, seul tail_file (lecture de fichier brut) la consulte.
     #[serde(default)]
     pub allowed_paths: Vec<PathBuf>,
 }
@@ -44,7 +52,6 @@ fn default_snapshots_dir() -> PathBuf {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct ServerConfig {
-    /// "stdio" ou "http"
     pub transport: String,
     #[serde(default = "default_bind_addr")]
     pub bind_addr: String,
@@ -83,6 +90,8 @@ pub struct TelegramConfig {
     pub bot_token: String,
     #[serde(default)]
     pub chat_id: String,
+    #[serde(default)]
+    pub webhook_secret: String,
 }
 
 impl Config {
@@ -92,8 +101,6 @@ impl Config {
         let mut cfg: Config = toml::from_str(&raw)
             .with_context(|| "config.toml invalide — vérifie la syntaxe TOML")?;
 
-        // La variable d'environnement, si présente, prime sur le fichier
-        // (pratique pour ne jamais committer le vrai token).
         if let Ok(env_token) = std::env::var("MCP_VPS_TOKEN") {
             if !env_token.is_empty() {
                 cfg.auth.bearer_token = env_token;
